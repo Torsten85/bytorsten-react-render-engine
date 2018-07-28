@@ -1,0 +1,12 @@
+{
+  "name": "@bytorsten/main",
+  "private": true,
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "command-line-args": "^5.0.2",
+    "react": "^16.4.1",
+    "react-dom": "^16.4.1"
+  }
+}

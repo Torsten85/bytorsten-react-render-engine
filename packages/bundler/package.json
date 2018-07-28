@@ -1,0 +1,18 @@
+{
+  "name": "@bytorsten/bundler",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "rollup": "^0.63.4",
+    "rollup-plugin-alias": "^1.4.0",
+    "rollup-plugin-commonjs": "Torsten85/rollup-plugin-commonjs#patch-1",
+    "rollup-plugin-hypothetical": "^2.1.0",
+    "rollup-plugin-named-exports": "^1.0.4",
+    "rollup-plugin-node-resolve": "^3.3.0",
+    "rollup-plugin-replace": "^2.0.0",
+    "rollup-plugin-terser": "^1.0.1",
+    "semver-diff": "^2.1.0"
+  }
+}

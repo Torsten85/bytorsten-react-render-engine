@@ -1,0 +1,46 @@
+{
+  "name": "@bytorsten/react-renderer",
+  "version": "1.0.0",
+  "description": "Renders react templates",
+  "main": "build/index.js",
+  "author": "Torsten Blindert",
+  "license": "MIT",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "babel-eslint": "^8.2.5",
+    "chokidar": "^2.0.4",
+    "eslint": "^4.9.0",
+    "eslint-config-airbnb": "^17.0.0",
+    "eslint-plugin-import": "^2.12.0",
+    "eslint-plugin-jsx-a11y": "^6.0.3",
+    "eslint-plugin-react": "^7.9.1",
+    "pkg": "Torsten85/pkg#nodev10-fork",
+    "rollup": "^0.63.4",
+    "rollup-plugin-node-resolve": "^3.3.0"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w",
+    "bundle.dev": "yarn build && node_modules/pkg/lib-es5/bin.js --targets host --options no-warnings,experimental-vm-modules --output bin/react-renderer-macos .",
+    "bundle": "yarn build && node_modules/pkg/lib-es5/bin.js --targets node10-linux-x64,node10-macos-x64 --options no-warnings,experimental-vm-modules --out-path bin .",
+    "prepare.pkg": "cd node_modules/pkg && yarn install && chmod +x lib-es5/bin.js",
+    "prepare.commonjs": "cd node_modules/rollup-plugin-commonjs && yarn install",
+    "prepare": "yarn prepare.pkg && yarn prepare.commonjs"
+  },
+  "bin": {
+    "renderer": "./build/index.js"
+  },
+  "pkg": {
+    "scripts": [
+      "node_modules/@babel/runtime/helpers/*.js",
+      "node_modules/@babel/runtime/core-js/**/*.js"
+    ],
+    "assets": [
+      "node_modules/@babel/runtime/**/*",
+      "build/index.js.map"
+    ]
+  }
+}
