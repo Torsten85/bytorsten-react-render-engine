@@ -1,160 +1,163 @@
 /* eslint-disable react/no-this-in-sfc */
 import path from 'path';
-import { rollup } from 'rollup';
-import resolve from 'rollup-plugin-node-resolve';
-import commonjs from 'rollup-plugin-commonjs';
-import replace from 'rollup-plugin-replace';
-import alias from 'rollup-plugin-alias';
-import { terser } from 'rollup-plugin-terser';
-import hypothetical from 'rollup-plugin-hypothetical';
-import namedExports from 'rollup-plugin-named-exports';
-import { stripBundle, nodeModulesPath, isProduction, resolveModule, getModuleVersion } from '@bytorsten/helper';
-import semverDiff from 'semver-diff';
+import webpack from 'webpack';
+import VirtualModulesPlugin from 'webpack-virtual-modules';
+import UglifyJsPlugin from 'uglifyjs-webpack-plugin';
+import MemoryFS from 'memory-fs';
+
+import { nodeModulesPath, isProduction } from '@bytorsten/helper';
+
+const FAKE_BUNDLED_ROOT = '/bundled';
+const FAKE_UNBUNDLED_ROOT = '/unbundled';
 
 export default class Bundler {
 
-  constructor({ file, baseBundle, chunkPath, baseDirectory, aliases = {}, hypotheticalFiles = {} }) {
+  constructor({ file, baseBundle, chunkPath, baseDirectory, aliases = {}, hypotheticalFiles = {}, externals = {} }) {
+
     this.file = path.basename(file);
     this.path = baseDirectory || path.dirname(file);
     this.chunkPath = chunkPath;
     this.baseBundle = baseBundle;
     this.hypotheticalFiles = hypotheticalFiles;
     this.aliases = aliases;
-    this.paths = [nodeModulesPath];
+    this.externals = externals;
 
-    this.externalNodeModulePaths = [];
+    let bundleNodeModulesPath = (baseDirectory || path.dirname(file)).replace(/\/$/, '');
+    if (!bundleNodeModulesPath.endsWith('node_modules')) {
+      bundleNodeModulesPath += '/node_modules';
+    }
+
+    this.nodeModulesPaths = [bundleNodeModulesPath, nodeModulesPath];
+
     for (const aliasPath of Object.values(aliases)) {
       const externalNodeModulePath = aliasPath.substring(0, aliasPath.indexOf('/node_modules')) + '/node_modules';
-      if (!~this.externalNodeModulePaths.indexOf(externalNodeModulePath)) {
-        this.externalNodeModulePaths.push(externalNodeModulePath);
+      if (!this.nodeModulesPaths.includes(externalNodeModulePath)) {
+        this.nodeModulesPaths.push(externalNodeModulePath);
       }
     }
+
   }
 
-  updateConfig(config) {
+  async bundle() {
 
-    const bundleFiles = Object.keys(this.baseBundle).reduce((files, key) => {
-      files[`./${key}`] = this.baseBundle[key];
-      return files;
+    const memoryFS = new MemoryFS();
+    memoryFS.mkdirSync(FAKE_BUNDLED_ROOT);
+    memoryFS.mkdirSync(FAKE_UNBUNDLED_ROOT);
+
+    const virtualModules = Object.keys(this.baseBundle).reduce((modules, name) => {
+      let { code, map } = this.baseBundle[name];
+
+      if (map) {
+        code += `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,${Buffer.from(map).toString('base64')}`;
+      }
+
+      modules[`${FAKE_UNBUNDLED_ROOT}/${name}`] = code;
+      return modules;
     }, {});
 
-    config.plugins[1] = hypothetical({
-      allowFallthrough: true,
-      leaveIdsAlone: true,
-      files: { ...bundleFiles, ...this.hypotheticalFiles }
-    });
-
-    return config;
-  }
-
-  resolveSubModulesFromHelper() {
-
-    const resolvedSubModules = {};
-
-    return {
-      resolveId: async (importee, importer) => {
-        if (/\0/.test(importee) || importee[0] === '.') {
-          return null;
-        }
-
-        for (const externalNodeModulePath of this.externalNodeModulePaths) {
-          if (importer.indexOf(externalNodeModulePath) === 0) {
-
-            const identifier = importee + externalNodeModulePath;
-            if (typeof resolvedSubModules[identifier] !== 'undefined') {
-              return resolvedSubModules[identifier];
-            }
-
-            const version = await getModuleVersion(importee, { basedir: externalNodeModulePath });
-
-            if (version === null) {
-              return resolvedSubModules[identifier] = null;
-            }
-
-            const parentVersion = await getModuleVersion(importee, { basedir: this.path, paths: this.paths });
-
-            if (parentVersion) {
-              const diff = semverDiff(version, parentVersion);
-
-              // we already have a module for that
-              if (diff === null || diff === 'patch' || diff === 'minor') {
-                return resolvedSubModules[identifier] = null;
-              }
-            }
-
-            return resolvedSubModules[identifier] = await resolveModule(importee, { basedir: externalNodeModulePath });
-          }
-        }
-
-        return null;
-      }
-    };
-  }
-
-  buildConfig() {
-    return this.updateConfig({
-      input: `./${this.file}`,
-      cache: null,
-      experimentalCodeSplitting: true,
-      onwarn: ({ message, loc }) => {
-        if (loc) {
-          console.log(`${loc.file} (${loc.line}:${loc.column})}: ${message}`); // eslint-disable-line no-console
-        } else {
-          console.log(message, ); // eslint-disable-line no-console
-        }
-
+    const compiler = webpack({
+      mode: isProduction() ? 'production' : 'development',
+      bail: true,
+      devtool: isProduction() ? null : 'cheap-module-source-map',
+      entry: `${FAKE_UNBUNDLED_ROOT}/${this.file}`,
+      output: {
+        path: FAKE_BUNDLED_ROOT,
+        filename: this.file
       },
+      resolve: {
+        alias: this.aliases,
+        modules: this.nodeModulesPaths
+      },
+      externals: this.externals,
       plugins: [
-        alias(this.aliases),
-        {}, // hypothetical
-        this.resolveSubModulesFromHelper(),
-        resolve({
-          extensions: [ '.js', '.json' ],
-          browser: true,
-          preferBuiltins: false,
-          customResolveOptions: {
-            basedir: this.path,
-            paths: this.paths
-          }
-        }),
-        namedExports(),
-        commonjs({
-          sourceMap: !isProduction(),
-          extensions: [ '.js', '' ] // allow files without extensions like the one from hypothetical
-        }),
-        replace({
-          'process.env.SSR': false,
-          'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV)
-        }),
-
-        isProduction() && terser({
-          toplevel: true
+        new VirtualModulesPlugin({
+          ...virtualModules,
+          ...this.hypotheticalFiles
         })
-      ]
+      ],
+      module: {
+        strictExportPresence: true,
+        rules: [
+          {
+            include: FAKE_UNBUNDLED_ROOT,
+            loader: require.resolve('source-map-loader'),
+            enforce: 'pre'
+          }
+        ]
+      },
+      performance: false,
+      optimization: {
+        minimizer: isProduction() ? [
+          new UglifyJsPlugin({
+            uglifyOptions: {
+              parse: {
+                ecma: 8
+              },
+              compress: {
+                ecma: 5,
+                warnings: false,
+                comparisons: false
+              },
+              mange: {
+                safari10: true
+              },
+              output: {
+                ecma: 5,
+                comments: false,
+                ascii_only: true
+              }
+            },
+
+            parallel: true,
+            cache: true,
+            sourceMap: true
+          })
+        ] : []
+      }
     });
-  }
 
-  async bundle({ legacy = false, cache = null } = {}) {
+    compiler.outputFileSystem = memoryFS;
 
-    let config;
-    if (cache) {
-      config = this.updateConfig(cache);
-    } else {
-      config = this.buildConfig();
-    }
+    await new Promise((resolve, reject) => {
+      compiler.run((error, stats) => {
+        if (error) {
+          return reject(error);
+        }
 
-    const result = await rollup(config);
-    config.cache = result.cache;
+        const { compilation: { errors, warnings } } = stats;
 
-    const format = legacy ? 'system' : 'es';
-    const bundle = stripBundle(await result.generate({
-      format,
-      sourcemap: !isProduction()
-    }));
+        if (errors.length > 0) {
+          return reject(new Error(errors[0]));
+        }
 
-    return {
-      cache: config,
-      bundle: bundle
-    };
+        if (warnings.length > 0) {
+          return reject(new Error(warnings[0]));
+        }
+
+        resolve();
+      });
+    });
+
+    const bundle = memoryFS.readdirSync(FAKE_BUNDLED_ROOT).reduce((bundle, filename) => {
+
+      if (!/\.map$/.test(filename)) {
+
+        let map;
+        try {
+          map = memoryFS.readFileSync(`${FAKE_BUNDLED_ROOT}/${filename}.map`, 'utf8');
+        } catch (error) {
+          map = null;
+        }
+
+        bundle[filename] = {
+          code: memoryFS.readFileSync(`${FAKE_BUNDLED_ROOT}/${filename}`, 'utf8'),
+          map
+        };
+      }
+
+      return bundle;
+    }, {});
+
+    return { bundle };
   }
 }

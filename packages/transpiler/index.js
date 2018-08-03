@@ -48,7 +48,7 @@ export default class Transpiler {
 
         console.warn(message);
       },
-      external: id => ~Object.keys(this.resolvedPaths).indexOf(id),
+      external: id => Object.keys(this.resolvedPaths).includes(id),
       experimentalCodeSplitting: true,
       plugins: [
         buildReactHelpers({

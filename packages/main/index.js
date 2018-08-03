@@ -32,7 +32,6 @@ class App extends Flow {
   constructor({ address, threads = 1 }) {
     super({ address, threads });
     this.renderUnits = {};
-    this.cacheBundles = {};
   }
 
   async transpile({ identifier, serverFile, clientFile, helpers, scriptName, hypotheticalFiles, aliases, extractDependencies }, { send }) {
@@ -82,19 +81,12 @@ class App extends Flow {
     return result;
   }
 
-  async bundle({ identifier, file, baseBundle, legacy, baseDirectory, aliases, hypotheticalFiles, chunkPath }) {
-    const bundler = new Bundler({ file, baseBundle, chunkPath, baseDirectory, aliases, hypotheticalFiles });
-    console.info(`Bundling identifier "${identifier}" ${this.cacheBundles[identifier] ? 'with' : 'without'} cached bundle`);
+  async bundle({ identifier, file, baseBundle, baseDirectory, aliases, hypotheticalFiles, externals, chunkPath }) {
+    const bundler = new Bundler({ file, baseBundle, chunkPath, baseDirectory, aliases, hypotheticalFiles, externals });
+    console.info(`Bundling identifier "${identifier}"`);
     console.time('bundle');
-    const { bundle, cache } = await bundler.bundle({
-      legacy,
-      cache: this.cacheBundles[identifier] || null
-    });
+    const { bundle } = await bundler.bundle();
     console.timeEnd('bundle');
-
-    if (!isProduction()) {
-      this.cacheBundles[identifier] = cache;
-    }
 
     return bundle;
   }

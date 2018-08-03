@@ -10,7 +10,7 @@ export default function privateResource({ rpc }) {
     name: 'private resource',
 
     load: async id => {
-      if (!~extensions.indexOf( path.parse(id).ext)) {
+      if (!extensions.includes(path.parse(id).ext)) {
         return null;
       }
 

@@ -54,12 +54,10 @@ export default ({ helpers, baseDirectory, addResolvedPath, addDependency }) => {
 
     const packageName = resolvePackageNameFromImporter(importer, extensionDirNames);
 
-    if (~helperModuleNames.indexOf(packageName) && extensionDirNames[packageName]) {
+    if (helperModuleNames.includes(packageName) && extensionDirNames[packageName]) {
       const extensionPath = extensionDirNames[packageName];
-
-
-
       const result = await resolveModule(importee, { basedir: extensionPath });
+
       if (!result) {
         return null;
       }
@@ -91,7 +89,7 @@ export default ({ helpers, baseDirectory, addResolvedPath, addDependency }) => {
         }
       }
 
-      if (containsPrefix(helperModuleNames, importee) || ~helperModuleRpcNames.indexOf(importee)) {
+      if (containsPrefix(helperModuleNames, importee) || helperModuleRpcNames.includes(importee)) {
         return importee;
       }
 
@@ -99,11 +97,11 @@ export default ({ helpers, baseDirectory, addResolvedPath, addDependency }) => {
     },
 
     load: id => {
-      if (~helperModuleNames.indexOf(id)) {
+      if (helperModuleNames.includes(id)) {
         return buildHelperCode(id, helpers[id], path => resolvePaths[id] = path, addDependency);
       }
 
-      if (~helperModuleRpcNames.indexOf(id)) {
+      if (helperModuleRpcNames.includes(id)) {
         const moduleName = id.replace(/\/_rpc$/, '');
         return buildHelperRpcCode(moduleName, helpers[moduleName]);
       }
@@ -171,7 +169,7 @@ const buildHelperRpcCode = async (moduleName, moduleHelpers) => {
 const resolveSubModule = async (id, helperModuleNames, extensionDirNames, addResolvePath, addDependency) => {
   // load sub module like "@vendor/package/server.js"
   const resolvedModuleName = id.split('/').slice(0, 2).join('/');
-  if (~helperModuleNames.indexOf(resolvedModuleName) && extensionDirNames[resolvedModuleName]) {
+  if (helperModuleNames.includes(resolvedModuleName) && extensionDirNames[resolvedModuleName]) {
     const filename = id.substring(resolvedModuleName.length + 1) + '.js';
     const directory = extensionDirNames[resolvedModuleName];
     addResolvePath(directory);

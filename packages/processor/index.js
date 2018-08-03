@@ -21,12 +21,16 @@ export default class Processor {
   }
 
   async require(moduleName) {
-    if (~Object.keys(this.resolvedPaths).indexOf(moduleName)) {
+    if (this.resolvedPaths[moduleName]) {
       return require(this.resolvedPaths[moduleName]); //eslint-disable-line import/no-dynamic-require
     }
 
     const modulePath = await resolveModule(moduleName, { basedir: this.paths[0], paths: this.paths.slice(1) });
-    return require(modulePath); //eslint-disable-line import/no-dynamic-require
+    if (modulePath) {
+      return require(modulePath); //eslint-disable-line import/no-dynamic-require
+    }
+
+    return null;
   }
 
   resolveModuleFromBundle(specifier) {
@@ -58,7 +62,7 @@ export default class Processor {
       if (typeof module === 'object') {
         const propertyNames = Object.getOwnPropertyNames(module);
 
-        if (~propertyNames.indexOf('default')) {
+        if (propertyNames.includes('default')) {
           exportPath = 'module.default';
         }
 
