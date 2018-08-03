@@ -33,6 +33,26 @@ export default class Processor {
     return null;
   }
 
+  sanitize(code) {
+    const dynamicImports = [];
+    const sanitizedCode = code.replace(/import\(([^)]+)\)/g, (_, rawModuleName) => {
+      const moduleName = rawModuleName.replace(/\/\*.+\*\//, '').replace(/(\s|"|')/g, '');
+      dynamicImports.push(moduleName);
+      return `Promise.resolve(import_${dynamicImports.length - 1})`;
+    });
+
+    if (dynamicImports.length === 0) {
+      return sanitizedCode;
+    }
+
+    const importCode = dynamicImports.map((imp, index) => `import import_${index} from '${imp}';`).join('\n');
+
+    return [
+      importCode,
+      sanitizedCode
+    ].join('\n');
+  }
+
   resolveModuleFromBundle(specifier) {
     const moduleName = path.join(specifier);
 
@@ -43,7 +63,7 @@ export default class Processor {
     const { code, map } = this.bundle[moduleName];
     const filename = toUrl(specifier);
     registerSource(filename, map);
-    return new Module(code, {
+    return new Module(this.sanitize(code), {
       context: this.context,
       url: filename
     });
