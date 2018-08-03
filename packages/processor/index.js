@@ -8,7 +8,7 @@ const toUrl = filename => `file://${filename}/`;
 
 export default class Processor {
 
-  constructor({ bundle, resolvedPaths, paths = [] }) {
+  constructor({ bundle, resolvedPaths = {}, paths = [] }) {
     this.bundle = bundle;
     this.paths = paths.map(p => path.resolve(p));
     this.resolvedModules = {};

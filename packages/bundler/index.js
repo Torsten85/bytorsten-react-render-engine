@@ -4,6 +4,8 @@ import webpack from 'webpack';
 import VirtualModulesPlugin from 'webpack-virtual-modules';
 import UglifyJsPlugin from 'uglifyjs-webpack-plugin';
 import MemoryFS from 'memory-fs';
+import Processor from '@bytorsten/processor';
+import merge from 'webpack-merge';
 
 import { nodeModulesPath, isProduction } from '@bytorsten/helper';
 
@@ -12,11 +14,11 @@ const FAKE_UNBUNDLED_ROOT = '/unbundled';
 
 export default class Bundler {
 
-  constructor({ file, baseBundle, chunkPath, baseDirectory, aliases = {}, hypotheticalFiles = {}, externals = {} }) {
+  constructor({ file, baseBundle, publicPath, baseDirectory, aliases = {}, hypotheticalFiles = {}, externals = {} }) {
 
     this.file = path.basename(file);
     this.path = baseDirectory || path.dirname(file);
-    this.chunkPath = chunkPath;
+    this.publicPath = publicPath;
     this.baseBundle = baseBundle;
     this.hypotheticalFiles = hypotheticalFiles;
     this.aliases = aliases;
@@ -35,15 +37,9 @@ export default class Bundler {
         this.nodeModulesPaths.push(externalNodeModulePath);
       }
     }
-
   }
 
-  async bundle() {
-
-    const memoryFS = new MemoryFS();
-    memoryFS.mkdirSync(FAKE_BUNDLED_ROOT);
-    memoryFS.mkdirSync(FAKE_UNBUNDLED_ROOT);
-
+  async buildConfig() {
     const virtualModules = Object.keys(this.baseBundle).reduce((modules, name) => {
       let { code, map } = this.baseBundle[name];
 
@@ -55,14 +51,16 @@ export default class Bundler {
       return modules;
     }, {});
 
-    const compiler = webpack({
+    const config = {
       mode: isProduction() ? 'production' : 'development',
       bail: true,
       devtool: isProduction() ? null : 'cheap-module-source-map',
       entry: `${FAKE_UNBUNDLED_ROOT}/${this.file}`,
       output: {
         path: FAKE_BUNDLED_ROOT,
-        filename: this.file
+        filename: this.file,
+        publicPath: this.publicPath,
+        chunkFilename: '[id].js'
       },
       resolve: {
         alias: this.aliases,
@@ -114,7 +112,24 @@ export default class Bundler {
           })
         ] : []
       }
-    });
+    };
+
+    if (this.baseBundle['webpack.config.js']) {
+      const processor = new Processor({ bundle: this.baseBundle, paths: this.nodeModulesPaths });
+      const additionalConfiguration = await processor.process('webpack.config.js');
+      return merge(config, additionalConfiguration);
+    }
+
+    return config;
+  }
+
+  async bundle() {
+
+    const memoryFS = new MemoryFS();
+    memoryFS.mkdirSync(FAKE_BUNDLED_ROOT);
+    memoryFS.mkdirSync(FAKE_UNBUNDLED_ROOT);
+
+    const compiler = webpack(await this.buildConfig());
 
     compiler.outputFileSystem = memoryFS;
 

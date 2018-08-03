@@ -4,7 +4,7 @@ import hypothetical from 'rollup-plugin-hypothetical';
 import alias from 'rollup-plugin-alias';
 import path from 'path';
 
-import { stripBundle, isProduction } from '@bytorsten/helper';
+import { stripBundle, fileExists, isProduction } from '@bytorsten/helper';
 
 import BabelPresetReact from '@babel/preset-react';
 import BabelRuntime from '@babel/plugin-transform-runtime';
@@ -21,9 +21,10 @@ import privateResource from './privateResource';
 
 export default class Transpiler {
 
-  constructor({ serverFile, clientFile, helpers, aliases = {}, hypotheticalFiles = {}, rpc }) {
+  constructor({ serverFile, clientFile, helpers, aliases = {}, hypotheticalFiles = {}, rpc, baseDirectory }) {
     this.serverFile = serverFile;
     this.clientFile = clientFile;
+    this.baseDirectory = baseDirectory || path.dirname(this.serverFile);
     this.helpers = helpers;
     this.hypotheticalFiles = hypotheticalFiles;
     this.aliases = aliases;
@@ -34,8 +35,10 @@ export default class Transpiler {
 
   async transpile() {
 
+    const possibleWebpackConfiguration = path.join(this.baseDirectory, 'webpack.config.js');
+
     this.result = await rollup({
-      input: [this.serverFile, this.clientFile].filter(Boolean),
+      input: [this.serverFile, this.clientFile, await fileExists(possibleWebpackConfiguration) ? possibleWebpackConfiguration : null].filter(Boolean),
       onwarn: ({ code, source, message, importer }) => {
 
         if (code === 'UNRESOLVED_IMPORT' && source[0] !== '.' && source[0] !== '/') {
@@ -68,6 +71,7 @@ export default class Transpiler {
         babel({
           runtimeHelpers: true,
           exclude: 'node_modules/**',
+          cwd: this.baseDirectory,
 
           presets: [
             BabelPresetReact

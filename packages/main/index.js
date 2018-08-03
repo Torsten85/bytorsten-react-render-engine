@@ -34,12 +34,12 @@ class App extends Flow {
     this.renderUnits = {};
   }
 
-  async transpile({ identifier, serverFile, clientFile, helpers, scriptName, hypotheticalFiles, aliases, extractDependencies }, { send }) {
+  async transpile({ identifier, serverFile, clientFile, helpers, scriptName, hypotheticalFiles, aliases, extractDependencies, baseDirectory }, { send }) {
     const rpc = request => send('rpc', request);
 
     delete this.renderUnits[identifier];
 
-    const transpiler = new Transpiler({ serverFile, scriptName, clientFile, helpers, hypotheticalFiles, aliases, rpc });
+    const transpiler = new Transpiler({ serverFile, scriptName, clientFile, helpers, hypotheticalFiles, aliases, rpc, baseDirectory });
     console.info(`Transpiling identifier "${identifier}"`);
     console.time('transpile');
     const { bundle, resolvedPaths } = await transpiler.transpile();
@@ -81,8 +81,8 @@ class App extends Flow {
     return result;
   }
 
-  async bundle({ identifier, file, baseBundle, baseDirectory, aliases, hypotheticalFiles, externals, chunkPath }) {
-    const bundler = new Bundler({ file, baseBundle, chunkPath, baseDirectory, aliases, hypotheticalFiles, externals });
+  async bundle({ identifier, file, baseBundle, baseDirectory, aliases, hypotheticalFiles, externals, publicPath }) {
+    const bundler = new Bundler({ file, baseBundle, publicPath, baseDirectory, aliases, hypotheticalFiles, externals });
     console.info(`Bundling identifier "${identifier}"`);
     console.time('bundle');
     const { bundle } = await bundler.bundle();

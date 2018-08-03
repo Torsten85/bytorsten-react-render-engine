@@ -28,6 +28,10 @@ export const loadFile = filename => new Promise((resolve, reject) => {
   });
 });
 
+export const fileExists = filename => new Promise(resolve => {
+  fs.access(filename, fs.constants.F_OK, error => resolve(!error));
+});
+
 export const resolveModule = (name, options) => new Promise(resolve => {
   resolveRequire(name, options, (error, result) => {
     if (error) {
