@@ -14,15 +14,23 @@ export default function privateResource({ rpc }) {
         return null;
       }
 
-      const publicPath = await rpc({
+      const { data, error } = await rpc({
         helper: '@bytorsten/react/internal.GetResourceUri',
         sourcePath: id
       });
 
       resources.push(id);
 
+      if (error) {
+        return `
+          console.error('${error.message}');
+          console.error('${error.stack}');
+          export default null;
+        `;
+      }
+
       return `
-        export default '${publicPath}';
+        export default '${data}';
       `;
     },
 

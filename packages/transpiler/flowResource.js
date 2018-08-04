@@ -19,13 +19,21 @@ export default function flowResource({ rpc }) {
 
       const resource = id.substring(PREFIX.length);
 
-      const path = await rpc({
+      const { data, error } = await rpc({
         helper: '@bytorsten/react.ResourceUri',
         path: resource
       });
 
+      if (error) {
+        return `
+          console.error('${error.message}');
+          console.error('${error.stack}');
+          export default null;
+        `;
+      }
+
       return `
-        export default '${path}';
+        export default '${data}';
       `;
     }
   };
