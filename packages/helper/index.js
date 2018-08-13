@@ -18,15 +18,17 @@ export const stripBundle = bundle => Object.keys(bundle.output).reduce((stripped
   return strippedBundle;
 }, {});
 
-export const loadFile = filename => new Promise((resolve, reject) => {
-  fs.readFile(filename, 'utf8', (error, content) => {
+export const waitFor = fn => new Promise((resolve, reject) => {
+  fn((error, result) => {
     if (error) {
       reject(error);
     } else {
-      resolve(content);
+      resolve(result);
     }
   });
 });
+
+export const loadFile = filename => waitFor(c => fs.readFile(filename, 'utf8', c));
 
 export const fileExists = filename => new Promise(resolve => {
   fs.access(filename, fs.constants.F_OK, error => resolve(!error));

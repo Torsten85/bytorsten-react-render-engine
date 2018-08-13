@@ -1,108 +1,190 @@
-import { rollup } from 'rollup';
-import babel from 'rollup-plugin-babel';
-import hypothetical from 'rollup-plugin-hypothetical';
-import alias from 'rollup-plugin-alias';
+import { isProduction, nodeModulesPath } from '@bytorsten/helper';
 import path from 'path';
+import webpack from 'webpack';
+import MemoryFS from 'memory-fs';
 
-import { stripBundle, fileExists, isProduction } from '@bytorsten/helper';
+import VirtualModules from './VirtualModules';
+import HelperProvider from './HelperProvider';
+import FlowResourceProvider from './FlowResourceProvider';
+import HypotheticalFilesProvider from './HypotheticalFilesProvider';
+import PrivateResourceProvider from './PrivateResourceProvider';
 
-import BabelPresetReact from '@babel/preset-react';
-import BabelRuntime from '@babel/plugin-transform-runtime';
-import BabelObjectRestSpread from '@babel/plugin-proposal-object-rest-spread';
-import BabelClassProperties from '@babel/plugin-proposal-class-properties';
-import BabelReactInlineElement from '@babel/plugin-transform-react-inline-elements';
-import BabelReactContantElements from '@babel/plugin-transform-react-constant-elements';
-import BabelSyntaxDynamicImport from '@babel/plugin-syntax-dynamic-import';
-import BabelSyntaxImportMeta from '@babel/plugin-syntax-import-meta';
-
-import buildReactHelpers from './helpers';
-import flowResource from './flowResource';
-import privateResource from './privateResource';
+const FAKE_BUNDLED_ROOT = '/__bundled';
+const FAKE_HELPER_ROOT = '/__helpers';
 
 export default class Transpiler {
-
-  constructor({ serverFile, clientFile, helpers, aliases = {}, hypotheticalFiles = {}, rpc, baseDirectory }) {
-    this.serverFile = serverFile;
-    this.clientFile = clientFile;
-    this.baseDirectory = baseDirectory || path.dirname(this.serverFile);
-    this.helpers = helpers;
-    this.hypotheticalFiles = hypotheticalFiles;
-    this.aliases = aliases;
-    this.resolvedPaths = {};
-    this.dependencies = [];
+  constructor({ helpers, hypotheticalFiles, aliases, rpc }) {
+    this.alises = aliases;
     this.rpc = rpc;
+    this.virtualModules = new VirtualModules([
+      new HelperProvider({ helpers, baseFolder: FAKE_HELPER_ROOT, hypotheticalFiles }),
+      new FlowResourceProvider({ rpc: () => this.rpc }),
+      new PrivateResourceProvider({ rpc: () => this.rpc }),
+      new HypotheticalFilesProvider(hypotheticalFiles)
+    ]);
   }
 
-  async transpile() {
+  getOrderedChunks(stats) {
+    const chunkOnlyConfig = {
+      assets: false,
+      cached: false,
+      children: false,
+      chunks: true,
+      chunkModules: false,
+      chunkOrigins: false,
+      errorDetails: false,
+      hash: false,
+      modules: false,
+      reasons: false,
+      source: false,
+      timings: false,
+      version: false
+    };
 
-    const possibleWebpackConfiguration = path.join(this.baseDirectory, 'webpack.config.js');
-
-    this.result = await rollup({
-      input: [this.serverFile, this.clientFile, await fileExists(possibleWebpackConfiguration) ? possibleWebpackConfiguration : null].filter(Boolean),
-      onwarn: ({ code, source, message, importer }) => {
-
-        if (code === 'UNRESOLVED_IMPORT' && source[0] !== '.' && source[0] !== '/') {
-          return;
-        }
-
-        if (code === 'CIRCULAR_DEPENDENCY' && importer === '@bytorsten/react') {
-          return;
-        }
-
-        console.warn(message);
-      },
-      external: id => Object.keys(this.resolvedPaths).includes(id),
-      experimentalCodeSplitting: true,
-      plugins: [
-        buildReactHelpers({
-          helpers: this.helpers,
-          baseDirectory: path.dirname(this.serverFile),
-          addResolvedPath: (name, path) => this.resolvedPaths[name] = path,
-          addDependency: path => this.dependencies.push(path)
-        }),
-        flowResource({ rpc: this.rpc }),
-        privateResource({ rpc: this.rpc }),
-        alias(this.aliases),
-        hypothetical({
-          allowFallthrough: true,
-          leaveIdsAlone: true,
-          files: this.hypotheticalFiles
-        }),
-        babel({
-          runtimeHelpers: true,
-          exclude: 'node_modules/**',
-          cwd: this.baseDirectory,
-
-          presets: [
-            BabelPresetReact
-          ],
-
-          plugins: [
-            BabelRuntime,
-            BabelSyntaxDynamicImport,
-            BabelSyntaxImportMeta,
-            BabelObjectRestSpread,
-            BabelClassProperties,
-            isProduction() && BabelReactInlineElement,
-            isProduction() && BabelReactContantElements
-          ].filter(Boolean)
-        })
-      ]
+    return stats.toJson(chunkOnlyConfig).chunks.sort((a, b) => {
+      if (a.entry !== b.entry) {
+        return b.entry ? 1: - 1;
+      }
+      return b.id - a.id;
     });
+  }
 
-    const rawBundle = await this.result.generate({ format: 'es', sourcemap: !isProduction() });
-    const bundle = stripBundle(rawBundle);
+  buildConfig({ file, target, baseDirectory }) {
+    this.virtualModules.updateTarget(target);
 
     return {
-      bundle,
-      resolvedPaths: this.resolvedPaths
+      mode: target === 'web' && isProduction() ? 'production' : 'development',
+      bail: true,
+      devtool: isProduction() ? null : 'cheap-module-source-map',
+      entry: file,
+      output: {
+        path: FAKE_BUNDLED_ROOT,
+        filename: 'bundle.js',
+        chunkFilename: '[name].chunk.js',
+        devtoolModuleFilenameTemplate: '[resource-path]'
+      },
+      resolve: {
+        modules: [
+          path.join(baseDirectory || path.dirname(file), 'node_modules'),
+          nodeModulesPath
+        ],
+        alias: this.alises
+      },
+      target,
+      plugins: [
+        this.virtualModules
+      ],
+      optimization: target === 'web' ? {
+        splitChunks: {
+          chunks: 'all',
+          name: 'vendors'
+        },
+        runtimeChunk: true
+      } : {},
+      module: {
+        strictExportPresence: true,
+        rules: [
+          {
+            exclude: [/[/\\\\]node_modules[/\\\\]/],
+            loader: require.resolve('source-map-loader'),
+            enforce: 'pre'
+          },
+          {
+            oneOf: [
+              {
+                test: /\.(js|jsx|mjs)$/,
+                exclude: [/[/\\\\]node_modules[/\\\\]/],
+                use: [
+                  {
+                    loader: require.resolve('babel-loader'),
+                    options: {
+                      presets: [
+                        '@babel/preset-react'
+                      ].map(require.resolve),
+                      plugins: [
+                        '@babel/plugin-proposal-object-rest-spread',
+                        '@babel/plugin-proposal-class-properties',
+                        '@babel/plugin-syntax-dynamic-import'
+                      ].map(require.resolve),
+                      cacheDirectory: true,
+                      highlightCode: true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     };
   }
 
+  async transpile({ cache, file, target, baseDirectory } = {}) {
+
+    const config = this.buildConfig({ file, target, baseDirectory });
+    config.cache = cache;
+
+    const memoryFS = new MemoryFS();
+    memoryFS.mkdirSync(FAKE_BUNDLED_ROOT);
+
+    const compiler = webpack(config);
+    compiler.outputFileSystem = memoryFS;
+
+    const stats = await new Promise((resolve, reject) => {
+      compiler.run((error, stats) => {
+        if (error) {
+          return reject(error);
+        }
+
+        const { compilation: { errors, warnings } } = stats;
+
+        if (errors.length > 0) {
+          return reject(errors[0]);
+        }
+
+        if (warnings.length > 0) {
+          return reject(warnings[0]);
+        }
+
+        resolve(stats);
+      });
+    });
+
+    this.stats = stats;
+    const chunks = this.getOrderedChunks(stats);
+
+    const { assets } = stats.compilation;
+
+    const bundle = chunks.reduce((bundle, chunk, order) => {
+      const chunkName = chunk.names[0];
+      if (!chunkName) {
+        return bundle;
+      }
+
+      const entry = {
+        initial: typeof chunk.isInitial === 'function' ? chunk.isInitial() : chunk.initial,
+        order
+      };
+
+      chunk.files.forEach(filename => {
+        if (filename.endsWith('.map')) {
+          entry.map = assets[filename].source();
+        } else {
+          bundle[filename] = entry;
+          entry.code = assets[filename].source();
+        }
+      });
+      return bundle;
+    }, {});
+
+    return { bundle, cache: stats.compilation.cache, resolvedPaths: {} };
+  }
+
   getDependencies() {
-    return [
-      ...this.dependencies,
-      ...this.result.cache.modules.map(({ id }) => id).filter(id => id[0] === '/')
-    ];
+    const { modules } = this.stats.compilation;
+
+    return modules
+      .filter(({ resource }) => resource && !~resource.indexOf('/node_modules/') && !resource.startsWith(FAKE_HELPER_ROOT))
+      .map(({ resource }) => resource);
   }
 }

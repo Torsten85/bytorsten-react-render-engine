@@ -4,16 +4,15 @@ import parseCommandLineArgs from 'command-line-args';
 import Flow from '@bytorsten/flow';
 import Transpiler from '@bytorsten/transpiler';
 import Renderer from '@bytorsten/renderer';
-import Bundler from '@bytorsten/bundler';
 import { isProduction } from '@bytorsten/helper';
 import path from 'path';
+import NodeCache from 'node-cache';
 
 import './include';
 
 Error.stackTraceLimit = Infinity;
 
 process.on('unhandledRejection', Flow.terminate);
-
 
 const options = parseCommandLineArgs([
   { name: 'address', type: String },
@@ -31,22 +30,40 @@ class App extends Flow {
 
   constructor({ address, threads = 1 }) {
     super({ address, threads });
-    this.renderUnits = {};
+    this.serverTranspileCaches = new NodeCache({ stdTTL: isProduction ? 0 : 600, useClones: false });
+    this.clientTranspileCaches = new NodeCache({ stdTTL: isProduction ? 0 : 600, useClones: false });
+    this.clientBundlePreparation = new NodeCache({ stdTTL: 60, useClones: false });
+    this.renderUnits = new NodeCache({ stdTTL: isProduction ? 0 : 600, useClones: false });
   }
 
-  async transpile({ identifier, serverFile, clientFile, helpers, scriptName, hypotheticalFiles, aliases, extractDependencies, baseDirectory }, { send }) {
+  async transpile({ identifier, serverFile, clientFile, helpers, hypotheticalFiles, aliases, extractDependencies, baseDirectory, prepareClientBundle }, { send, reply }) {
     const rpc = request => send('rpc', request);
 
-    delete this.renderUnits[identifier];
+    this.renderUnits.del(identifier);
+    const previousCache = this.serverTranspileCaches.get(identifier);
 
-    const transpiler = new Transpiler({ serverFile, scriptName, clientFile, helpers, hypotheticalFiles, aliases, rpc, baseDirectory });
+    const transpiler = new Transpiler({ helpers, hypotheticalFiles, aliases, rpc });
     console.info(`Transpiling identifier "${identifier}"`);
     console.time('transpile');
-    const { bundle, resolvedPaths } = await transpiler.transpile();
+    const { bundle, cache, resolvedPaths } = await transpiler.transpile({ file: serverFile, cache: previousCache, baseDirectory, target: 'async-node' });
     const dependencies = extractDependencies ? transpiler.getDependencies() : [];
     console.timeEnd('transpile');
 
-    return { bundle, resolvedPaths, dependencies };
+    this.serverTranspileCaches.set(identifier, cache);
+    reply({ bundle, resolvedPaths, dependencies });
+
+    if (prepareClientBundle) {
+      this.clientBundlePreparation.set(identifier, Promise
+        .resolve(this.clientTranspileCaches.get(identifier))
+        .then(async previousClientCache => {
+          console.info(`Preparing bundle for identifier ${identifier}`);
+          console.time('prepare bundle');
+          const { bundle, cache } = await transpiler.transpile({ file: clientFile, cache: previousClientCache, baseDirectory, target: 'web' });
+          console.timeEnd('prepare bundle');
+          this.clientTranspileCaches.set(identifier, cache);
+          return bundle;
+        }));
+    }
   }
 
   async render({ identifier, file, bundle, context, internalData, baseDirectory, resolvedPaths }, { send }) {
@@ -56,14 +73,14 @@ class App extends Flow {
     console.time('render');
     const unit = await renderer.renderUnit();
     const result = await unit.render();
-    this.renderUnits[identifier] = unit;
+    this.renderUnits.set(identifier, unit);
     console.timeEnd('render');
 
     return result;
   }
 
   async shallowRender({ identifier, context, internalData }, { send }) {
-    const unit = this.renderUnits[identifier];
+    const unit = this.renderUnits.get(identifier);
 
     if (!unit) {
       console.info(`Shallow rendering impossible, identifier "${identifier}" is unknown`);
@@ -81,13 +98,28 @@ class App extends Flow {
     return result;
   }
 
-  async bundle({ identifier, file, baseBundle, baseDirectory, aliases, hypotheticalFiles, externals, publicPath }) {
-    const bundler = new Bundler({ file, baseBundle, publicPath, baseDirectory, aliases, hypotheticalFiles, externals });
+  async bundle({ identifier, clientFile, helpers, hypotheticalFiles, aliases, baseDirectory }, { send }) {
+
+    if (this.clientBundlePreparation.get(identifier)) {
+      console.info(`Waiting for bundle preparation of ${identifier}`);
+      console.time('bundle wait');
+      const bundle = await this.clientBundlePreparation.get(identifier);
+      console.timeEnd('bundle wait');
+      this.clientBundlePreparation.del(identifier);
+      return bundle;
+    }
+
+    const rpc = request => send('rpc', request);
+
+    const previousCache = this.clientTranspileCaches.get(identifier);
+
+    const transpiler = new Transpiler({ helpers, hypotheticalFiles, aliases, rpc });
     console.info(`Bundling identifier "${identifier}"`);
     console.time('bundle');
-    const { bundle } = await bundler.bundle();
+    const { bundle, cache } = await transpiler.transpile({ file: clientFile, cache: previousCache, baseDirectory, target: 'web' });
     console.timeEnd('bundle');
 
+    this.clientTranspileCaches.set(identifier, cache);
     return bundle;
   }
 }

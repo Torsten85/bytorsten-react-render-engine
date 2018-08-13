@@ -25,9 +25,8 @@
     "build": "rollup -c",
     "watch": "rollup -c -w",
     "bundle.dev": "yarn build && node_modules/pkg/lib-es5/bin.js --targets host --options no-warnings,experimental-vm-modules --output bin/react-renderer-macos .",
-    "bundle": "yarn build && node_modules/pkg/lib-es5/bin.js --targets node10-linux-x64,node10-macos-x64 --options no-warnings,experimental-vm-modules --out-path bin .",
-    "prepare.pkg": "cd node_modules/pkg && yarn install && chmod +x lib-es5/bin.js",
-    "prepare": "yarn prepare.pkg"
+    "bundle": "yarn prepare.pkg && yarn build && node_modules/pkg/lib-es5/bin.js --targets node10-linux-x64,node10-macos-x64 --options no-warnings,experimental-vm-modules --out-path bin .",
+    "prepare.pkg": "cd node_modules/pkg && yarn install && chmod +x lib-es5/bin.js"
   },
   "bin": {
     "renderer": "./build/index.js"
