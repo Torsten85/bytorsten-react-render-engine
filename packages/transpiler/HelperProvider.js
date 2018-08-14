@@ -1,23 +1,42 @@
-import { fileExists, loadFile } from '@bytorsten/helper';
-import MagicString from 'magic-string';
+import { fileExists, loadFile, waitFor } from '@bytorsten/helper';
 import path from 'path';
-import crypto from 'crypto';
+import fs from 'fs';
+import requireResolve from 'resolve';
 
 const EXTENSION_KEY = '__extension';
 
+const realPath = path => waitFor(c => fs.realpath(path, c));
+const findPackageCache = {};
+const findPackage = async (pkgName, basedir) => {
+  const key = pkgName + basedir;
+  if (findPackageCache[key]) {
+    return findPackageCache[key];
+  }
+
+  basedir = Array.isArray(basedir) ? basedir : [basedir];
+
+  const result = await waitFor(c => requireResolve(pkgName, { basedir: basedir[0], paths: basedir.slice(1) }, c));
+  findPackageCache[key] = result;
+  return result;
+};
+
 export default class HelperProvider {
 
-  constructor({ helpers, baseFolder }) {
+  constructor({ helpers, baseFolder, modules }) {
     this.helpers = helpers;
     this.baseFolder = baseFolder;
-    this.knownHashes = {};
-    this.helperNames = Object.keys(this.helpers);
+    this.otherModuleRoots = modules;
+    this.helperNames = Object.keys(helpers);
+    this.extensionPaths = new Set(Object
+      .values(helpers)
+      .map(configuration => configuration[EXTENSION_KEY])
+      .filter(Boolean)
+      .map(path.dirname)
+    );
   }
 
   toFilename(packageName) {
-    const packageHash = crypto.createHash('md5').update(packageName).digest('hex');
-    this.knownHashes[packageHash] = packageName;
-    return `${this.baseFolder}/${packageHash}/index.js`;
+    return `${this.baseFolder}/${packageName}/index.js`;
   }
 
   async generateModule(helper, subPath) {
@@ -61,27 +80,21 @@ export default class HelperProvider {
 
     if (dynamicHelper.length === 0) {
       if (configuration[EXTENSION_KEY]) {
-        return configuration[EXTENSION_KEY];
+        return { filename: configuration[EXTENSION_KEY] };
       }
     }
 
-    let code;
+    let content;
     if (configuration[EXTENSION_KEY]) {
-      code = new MagicString(await loadFile(configuration[EXTENSION_KEY]));
-      code.append('\n');
+      content = await loadFile(configuration[EXTENSION_KEY]);
     } else {
-      code = new MagicString('');
+      content = '';
     }
 
-    code.append(`export { ${dynamicHelper.join(', ')} } from '${helper}/_rpc';`);
-    const filename = this.toFilename(helper);
-    const map = code.generateMap({
-      file: filename,
-      source: configuration[EXTENSION_KEY] || null,
-      hires: true
-    });
+    content += (`\nexport { ${dynamicHelper.join(', ')} } from '${helper}/_rpc';`);
 
-    return { filename, content: `${code.toString()}\n//# sourceMappingURL=${map.toUrl()}` };
+    const filename = configuration[EXTENSION_KEY] ? await realPath(configuration[EXTENSION_KEY]) : this.toFilename(helper);
+    return { filename, content };
   }
 
   async generateSubHelperModule(helper, subPath) {
@@ -102,19 +115,32 @@ export default class HelperProvider {
 
   async handle(filename, requestPath) {
     const helper = this.helperNames.find(helperName => filename.startsWith(helperName));
+
     if (helper) {
+
       const subPath = filename.substring(helper.length + 1);
       return this.generateModule(helper, subPath);
-    } else if (requestPath.startsWith(this.baseFolder)) {
-      const packageHash = requestPath.substr(this.baseFolder.length + 1, 32);
-      const helperName = this.knownHashes[packageHash];
-      if (helperName) {
-        const configuartion = this.helpers[helperName];
-        if (configuartion && configuartion[EXTENSION_KEY]) {
-          const resolvedFilename = path.join(path.dirname(configuartion[EXTENSION_KEY]), `${filename}.js`);
-          if (await fileExists(resolvedFilename)) {
-            return { filename: resolvedFilename };
-          }
+
+    } else if (filename[0] !== '/' && filename[0] !== '.') {
+
+      const extensionPath = Array.from(this.extensionPaths).find(p => requestPath.startsWith(p));
+
+      if (extensionPath) {
+
+        try {
+          const resolved = await findPackage(filename, this.otherModuleRoots);
+          return { filename: resolved };
+        } catch (e) {
+          // do nothing
+        }
+
+        try {
+          const resolved = await findPackage(filename, extensionPath);
+          const basePath = resolved.substring(0, resolved.lastIndexOf('node_modules'));
+          this.extensionPaths.add(basePath);
+          return { filename: resolved };
+        } catch (error) {
+          // do nothing
         }
       }
     }

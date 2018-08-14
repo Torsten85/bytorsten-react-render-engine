@@ -1,20 +1,38 @@
 import vm from 'vm';
+import path from 'path';
 import { registerSource, unregisterSource } from '@bytorsten/sourcemap';
 
 export default class Renderer {
-  constructor({ bundle, context = {}, rpc, resolvedPaths = [], internalData = {} }) {
+  constructor({ bundle, context = {}, rpc, internalData = {} }) {
     this.bundle = bundle;
     this.context = context;
     this.rpc = rpc;
     this.internalData = internalData;
-    this.resolvedPaths = resolvedPaths;
   }
 
   buildContext() {
     return vm.createContext({
       process: { env: { SSR: true } },
-      require,
+      global: {},
+      require: packageName => {
+        const module = this.bundle.find(({ name }) => name === path.join(packageName));
+
+        if (module) {
+          const vmContext = this.buildContext();
+          vmContext.exports = {};
+          registerSource(module.name, module.map);
+          vm.runInNewContext(module.code, vmContext);
+          unregisterSource(module.name);
+          return vmContext.exports;
+        }
+
+        return require(packageName); // eslint-disable-line import/no-dynamic-require
+      },
       console,
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
       __rpc: data => this.rpc(data),
       __internalData: this.internalData
     });
@@ -22,12 +40,13 @@ export default class Renderer {
 
   async renderUnit() {
 
-    if (Object.keys(this.bundle).length !== 1) {
-      throw new Error('Server bundle expects exactly one file');
+    const initials = this.bundle.filter(m => m.initial);
+
+    if (initials.length !== 1) {
+      throw new Error('Could not find initial package.');
     }
 
-    const entry = this.bundle[0];
-
+    const entry = initials[0];
     const vmContext = this.buildContext();
 
     registerSource(entry.name, entry.map);

@@ -1,12 +1,13 @@
-import { isProduction, nodeModulesPath } from '@bytorsten/helper';
+import { isProduction, nodeModulesPath, fileExists } from '@bytorsten/helper';
 import path from 'path';
 import webpack from 'webpack';
+import merge from 'webpack-merge';
 import MemoryFS from 'memory-fs';
+import VirtualModulesPlugin from 'webpack-virtual-modules';
 
 import VirtualModules from './VirtualModules';
 import HelperProvider from './HelperProvider';
 import FlowResourceProvider from './FlowResourceProvider';
-import HypotheticalFilesProvider from './HypotheticalFilesProvider';
 import PrivateResourceProvider from './PrivateResourceProvider';
 
 const FAKE_BUNDLED_ROOT = '/__bundled';
@@ -16,12 +17,9 @@ export default class Transpiler {
   constructor({ helpers, hypotheticalFiles, aliases, rpc }) {
     this.alises = aliases;
     this.rpc = rpc;
-    this.virtualModules = new VirtualModules([
-      new HelperProvider({ helpers, baseFolder: FAKE_HELPER_ROOT, hypotheticalFiles }),
-      new FlowResourceProvider({ rpc: () => this.rpc }),
-      new PrivateResourceProvider({ rpc: () => this.rpc }),
-      new HypotheticalFilesProvider(hypotheticalFiles)
-    ]);
+    this.helpers = helpers;
+    this.hypotheticalFiles = hypotheticalFiles;
+    this.additionalDependencies = new Set();
   }
 
   getOrderedChunks(stats) {
@@ -49,10 +47,18 @@ export default class Transpiler {
     });
   }
 
-  buildConfig({ file, target, baseDirectory }) {
-    this.virtualModules.updateTarget(target);
+  async buildConfig({ file, target, publicPath, baseDirectory }) {
+    const base = path.join(baseDirectory || path.dirname(file));
+    const modules = [path.join(base, 'node_modules')];
 
-    return {
+    const possibleBabelRc = path.join(base, '.babelrc');
+    let babelrc;
+    if (await fileExists(possibleBabelRc)) {
+      babelrc = possibleBabelRc;
+      this.additionalDependencies.add(babelrc);
+    }
+
+    const config = {
       mode: target === 'web' && isProduction() ? 'production' : 'development',
       bail: true,
       devtool: isProduction() ? null : 'cheap-module-source-map',
@@ -61,26 +67,32 @@ export default class Transpiler {
         path: FAKE_BUNDLED_ROOT,
         filename: 'bundle.js',
         chunkFilename: '[name].chunk.js',
-        devtoolModuleFilenameTemplate: '[resource-path]'
+        devtoolModuleFilenameTemplate: '[resource-path]',
+        publicPath
       },
       resolve: {
         modules: [
-          path.join(baseDirectory || path.dirname(file), 'node_modules'),
+          ...modules,
           nodeModulesPath
         ],
         alias: this.alises
       },
       target,
       plugins: [
-        this.virtualModules
+        new VirtualModules({
+          target,
+          providers: [
+            new HelperProvider({
+              helpers: this.helpers,
+              baseFolder: FAKE_HELPER_ROOT,
+              modules
+            }),
+            new FlowResourceProvider({ rpc: () => this.rpc }),
+            new PrivateResourceProvider({ rpc: () => this.rpc })
+          ]
+        }),
+        new VirtualModulesPlugin(this.hypotheticalFiles)
       ],
-      optimization: target === 'web' ? {
-        splitChunks: {
-          chunks: 'all',
-          name: 'vendors'
-        },
-        runtimeChunk: true
-      } : {},
       module: {
         strictExportPresence: true,
         rules: [
@@ -98,6 +110,8 @@ export default class Transpiler {
                   {
                     loader: require.resolve('babel-loader'),
                     options: {
+                      babelrc: true,
+                      extends: babelrc,
                       presets: [
                         '@babel/preset-react'
                       ].map(require.resolve),
@@ -117,11 +131,20 @@ export default class Transpiler {
         ]
       }
     };
+
+    const possibleWebpackConfig = path.join(base, 'webpack.config.js');
+    if (await fileExists(possibleWebpackConfig)) {
+      this.additionalDependencies.add(possibleWebpackConfig);
+      const extensionConfig = require(possibleWebpackConfig); // eslint-disable-line import/no-dynamic-require
+      return merge(config, extensionConfig);
+    }
+
+    return config;
   }
 
-  async transpile({ cache, file, target, baseDirectory } = {}) {
+  async transpile({ cache, file, target, publicPath, baseDirectory } = {}) {
 
-    const config = this.buildConfig({ file, target, baseDirectory });
+    const config = await this.buildConfig({ file, target, publicPath, baseDirectory });
     config.cache = cache;
 
     const memoryFS = new MemoryFS();
@@ -185,6 +208,7 @@ export default class Transpiler {
 
     return modules
       .filter(({ resource }) => resource && !~resource.indexOf('/node_modules/') && !resource.startsWith(FAKE_HELPER_ROOT))
-      .map(({ resource }) => resource);
+      .map(({ resource }) => resource)
+      .concat(Array.from(this.additionalDependencies));
   }
 }
