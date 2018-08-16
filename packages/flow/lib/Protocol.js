@@ -41,6 +41,6 @@ export default class Protocol extends EventEmitter {
 
   format(data) {
     const payload = JSON.stringify(data);
-    return `<[[${payload.length}]]>${payload}`;
+    return `<[[${Buffer.from(payload).length}]]>${payload}`;
   }
 }

@@ -1,24 +1,10 @@
 import { fileExists, loadFile, waitFor } from '@bytorsten/helper';
 import path from 'path';
 import fs from 'fs';
-import requireResolve from 'resolve';
 
 const EXTENSION_KEY = '__extension';
 
 const realPath = path => waitFor(c => fs.realpath(path, c));
-const findPackageCache = {};
-const findPackage = async (pkgName, basedir) => {
-  const key = pkgName + basedir;
-  if (findPackageCache[key]) {
-    return findPackageCache[key];
-  }
-
-  basedir = Array.isArray(basedir) ? basedir : [basedir];
-
-  const result = await waitFor(c => requireResolve(pkgName, { basedir: basedir[0], paths: basedir.slice(1) }, c));
-  findPackageCache[key] = result;
-  return result;
-};
 
 export default class HelperProvider {
 
@@ -27,12 +13,6 @@ export default class HelperProvider {
     this.baseFolder = baseFolder;
     this.otherModuleRoots = modules;
     this.helperNames = Object.keys(helpers);
-    this.extensionPaths = new Set(Object
-      .values(helpers)
-      .map(configuration => configuration[EXTENSION_KEY])
-      .filter(Boolean)
-      .map(path.dirname)
-    );
   }
 
   toFilename(packageName) {
@@ -113,36 +93,24 @@ export default class HelperProvider {
     return { filename: resolvedSubPath };
   }
 
-  async handle(filename, requestPath) {
-    const helper = this.helperNames.find(helperName => filename.startsWith(helperName));
+  getResolversForPath(lookupPath) {
+    const resolver = Object.keys(this.helperResolvers).find(p => lookupPath.startsWith(p));
+    if (!resolver) {
+      return [];
+    }
+
+    return [
+      ...this.rootResolvers,
+      resolver
+    ];
+  }
+
+  async handle(filename) {
+    const helper = this.helperNames.find(helperName => filename.startsWith(helperName) && ['/', ''].includes(filename.substr(helperName.length, 1)));
 
     if (helper) {
-
       const subPath = filename.substring(helper.length + 1);
       return this.generateModule(helper, subPath);
-
-    } else if (filename[0] !== '/' && filename[0] !== '.') {
-
-      const extensionPath = Array.from(this.extensionPaths).find(p => requestPath.startsWith(p));
-
-      if (extensionPath) {
-
-        try {
-          const resolved = await findPackage(filename, this.otherModuleRoots);
-          return { filename: resolved };
-        } catch (e) {
-          // do nothing
-        }
-
-        try {
-          const resolved = await findPackage(filename, extensionPath);
-          const basePath = resolved.substring(0, resolved.lastIndexOf('node_modules'));
-          this.extensionPaths.add(basePath);
-          return { filename: resolved };
-        } catch (error) {
-          // do nothing
-        }
-      }
     }
   }
 }

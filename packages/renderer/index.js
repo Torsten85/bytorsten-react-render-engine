@@ -1,33 +1,55 @@
 import vm from 'vm';
 import path from 'path';
 import { registerSource, unregisterSource } from '@bytorsten/sourcemap';
+import ResolvingModule from './ResolvingModule';
 
 export default class Renderer {
-  constructor({ bundle, context = {}, rpc, internalData = {} }) {
+  constructor({ bundle, context = {}, rpc, excluded = {}, internalData = {} }) {
     this.bundle = bundle;
     this.context = context;
     this.rpc = rpc;
     this.internalData = internalData;
+
+    this.module = new ResolvingModule({
+
+      require: moduleName => {
+        return this.loadModuleFromBundle(moduleName);
+      },
+
+      resolveFilename: moduleName => {
+        return excluded[moduleName];
+      }
+    });
+  }
+
+  loadModuleFromBundle(moduleName) {
+    const module = this.bundle.find(({ name }) => name === path.join(moduleName));
+
+    if (module) {
+      const vmContext = this.buildContext();
+      vmContext.exports = {};
+      registerSource(module.name, module.map);
+      vm.runInNewContext(module.code, vmContext, {
+        filename: module.name
+      });
+
+      unregisterSource(module.name);
+      return vmContext.exports;
+    }
+
+    return null;
   }
 
   buildContext() {
     return vm.createContext({
       process: { env: { SSR: true } },
-      global: {},
-      require: packageName => {
-        const module = this.bundle.find(({ name }) => name === path.join(packageName));
-
-        if (module) {
-          const vmContext = this.buildContext();
-          vmContext.exports = {};
-          registerSource(module.name, module.map);
-          vm.runInNewContext(module.code, vmContext);
-          unregisterSource(module.name);
-          return vmContext.exports;
-        }
-
-        return require(packageName); // eslint-disable-line import/no-dynamic-require
+      global: {
+        Promise
       },
+      Buffer,
+      Promise,
+      exports,
+      require: this.module.require,
       console,
       setTimeout,
       clearTimeout,
@@ -49,9 +71,9 @@ export default class Renderer {
     const entry = initials[0];
     const vmContext = this.buildContext();
 
-    registerSource(entry.name, entry.map);
-    const render = vm.runInNewContext(entry.code, vmContext).default;
-    unregisterSource(entry.name);
+    const render = vm.runInNewContext(entry.code, vmContext, {
+      filename: entry.name
+    }).default;
 
     return {
       render: async () => {

@@ -11,4 +11,10 @@ export default class HypotheticalFilesProvider {
       };
     }
   }
+
+  apply(virtualModules) {
+    for (const filename in this.files) {
+      virtualModules.writeModule(`/${filename}`, this.files[filename]);
+    }
+  }
 }

@@ -1,25 +1,59 @@
 import { isProduction, nodeModulesPath, fileExists } from '@bytorsten/helper';
 import path from 'path';
 import webpack from 'webpack';
+import fs from 'fs';
+
 import merge from 'webpack-merge';
 import MemoryFS from 'memory-fs';
-import VirtualModulesPlugin from 'webpack-virtual-modules';
 
-import VirtualModules from './VirtualModules';
-import HelperProvider from './HelperProvider';
-import FlowResourceProvider from './FlowResourceProvider';
-import PrivateResourceProvider from './PrivateResourceProvider';
+import formatErrors from './format-errors';
+import VirtualModules from './plugins/VirtualModules';
+import HelperProvider from './plugins/HelperProvider';
+import FlowResourceProvider from './plugins/FlowResourceProvider';
+import hypotheticalFilesProvider from './plugins/HypotheticalFilesProvider';
+import ResourceLoader from './loader/ResourceLoader';
 
 const FAKE_BUNDLED_ROOT = '/__bundled';
 const FAKE_HELPER_ROOT = '/__helpers';
 
 export default class Transpiler {
   constructor({ helpers, hypotheticalFiles, aliases, rpc }) {
-    this.alises = aliases;
+    this.aliases = aliases;
     this.rpc = rpc;
     this.helpers = helpers;
     this.hypotheticalFiles = hypotheticalFiles;
     this.additionalDependencies = new Set();
+    this.excluded = {};
+  }
+
+  filterExternalModules(context, request, callback) {
+
+    if (this.excluded[request]) {
+      return callback(null, `commonjs ${this.excluded[request]}`);
+    }
+
+    if (
+      request[0] !== '.' &&
+      request[0] !== '/' &&
+      !request.startsWith('resource://') &&
+      !(this.aliases && this.aliases[request]) &&
+      !(this.hypotheticalFiles && this.hypotheticalFiles[request])
+    ) {
+
+      const isHelper = !!Object.keys(this.helpers).find(helperName => request.startsWith(helperName));
+      if (!isHelper) {
+        return this.resolver.resolve({}, context, request, {}, (error, filepath) => {
+          if (error) {
+            return callback();
+          }
+
+          this.excluded[request] = filepath;
+          return callback(null, `commonjs ${filepath}`);
+        });
+      }
+    }
+
+    callback();
   }
 
   getOrderedChunks(stats) {
@@ -47,9 +81,9 @@ export default class Transpiler {
     });
   }
 
-  async buildConfig({ file, target, publicPath, baseDirectory }) {
+  async buildConfig({ file, target, publicPath, baseDirectory, externals }) {
     const base = path.join(baseDirectory || path.dirname(file));
-    const modules = [path.join(base, 'node_modules')];
+
 
     const possibleBabelRc = path.join(base, '.babelrc');
     let babelrc;
@@ -58,11 +92,17 @@ export default class Transpiler {
       this.additionalDependencies.add(babelrc);
     }
 
+    externals = externals || [];
+
     const config = {
       mode: target === 'web' && isProduction() ? 'production' : 'development',
       bail: true,
       devtool: isProduction() ? null : 'cheap-module-source-map',
       entry: file,
+      externals: [
+        target === 'node' && this.filterExternalModules.bind(this),
+        ...externals
+      ].filter(Boolean),
       output: {
         path: FAKE_BUNDLED_ROOT,
         filename: 'bundle.js',
@@ -71,27 +111,34 @@ export default class Transpiler {
         publicPath
       },
       resolve: {
+        mainFields: target === 'node' ? ['main'] : undefined,
         modules: [
-          ...modules,
+          path.join(base, 'node_modules'),
+          'node_modules',
           nodeModulesPath
         ],
-        alias: this.alises
+        alias: this.aliases
       },
       target,
       plugins: [
         new VirtualModules({
           target,
           providers: [
+            new FlowResourceProvider({ rpc: () => this.rpc }),
+            new hypotheticalFilesProvider(this.hypotheticalFiles),
             new HelperProvider({
               helpers: this.helpers,
-              baseFolder: FAKE_HELPER_ROOT,
-              modules
-            }),
-            new FlowResourceProvider({ rpc: () => this.rpc }),
-            new PrivateResourceProvider({ rpc: () => this.rpc })
+              baseFolder: FAKE_HELPER_ROOT
+            })
           ]
         }),
-        new VirtualModulesPlugin(this.hypotheticalFiles)
+        {
+          apply: compiler => {
+            compiler.resolverFactory.hooks.resolver.tap('normal', 'VirtualModules', resolver => {
+              this.resolver = resolver;
+            });
+          }
+        }
       ],
       module: {
         strictExportPresence: true,
@@ -103,6 +150,13 @@ export default class Transpiler {
           },
           {
             oneOf: [
+              {
+                test: [/\.bmp$/, /\.gif$/, /\.jpe?g$/, /\.png$/, /\.css$/],
+                loader: path.resolve(path.join(__dirname, './ResourceLoader')),
+                options: {
+                  rpc: () => this.rpc
+                }
+              },
               {
                 test: /\.(js|jsx|mjs)$/,
                 exclude: [/[/\\\\]node_modules[/\\\\]/],
@@ -142,15 +196,16 @@ export default class Transpiler {
     return config;
   }
 
-  async transpile({ cache, file, target, publicPath, baseDirectory } = {}) {
+  async transpile({ cache, file, target, publicPath, baseDirectory, externals } = {}) {
 
-    const config = await this.buildConfig({ file, target, publicPath, baseDirectory });
+    const config = await this.buildConfig({ file, target, publicPath, baseDirectory, externals });
     config.cache = cache;
 
     const memoryFS = new MemoryFS();
     memoryFS.mkdirSync(FAKE_BUNDLED_ROOT);
 
     const compiler = webpack(config);
+    this.compiler = compiler;
     compiler.outputFileSystem = memoryFS;
 
     const stats = await new Promise((resolve, reject) => {
@@ -159,19 +214,21 @@ export default class Transpiler {
           return reject(error);
         }
 
-        const { compilation: { errors, warnings } } = stats;
+        const messages = formatErrors(stats);
 
-        if (errors.length > 0) {
-          return reject(errors[0]);
+        if (messages.errors.length > 0) {
+          return reject(messages.errors[0]);
         }
 
-        if (warnings.length > 0) {
-          return reject(warnings[0]);
+        if (messages.warnings.length > 0) {
+          messages.warnings.forEach(warning => console.log(warning)); // eslint-disable-line no-console
         }
 
         resolve(stats);
       });
     });
+
+    fs.writeFileSync(`/tmp/stats-${target}.json`, JSON.stringify(stats.toJson()));
 
     this.stats = stats;
     const chunks = this.getOrderedChunks(stats);
@@ -200,7 +257,7 @@ export default class Transpiler {
       return bundle;
     }, {});
 
-    return { bundle, cache: stats.compilation.cache, resolvedPaths: {} };
+    return { bundle, cache: stats.compilation.cache, excluded: this.excluded };
   }
 
   getDependencies() {
