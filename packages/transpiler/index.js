@@ -2,8 +2,8 @@ import { isProduction, nodeModulesPath, fileExists } from '@bytorsten/helper';
 import path from 'path';
 import webpack from 'webpack';
 import fs from 'fs';
-
 import merge from 'webpack-merge';
+import UglifyJsPlugin from 'uglifyjs-webpack-plugin';
 import MemoryFS from 'memory-fs';
 
 import formatErrors from './format-errors';
@@ -11,7 +11,6 @@ import VirtualModules from './plugins/VirtualModules';
 import HelperProvider from './plugins/HelperProvider';
 import FlowResourceProvider from './plugins/FlowResourceProvider';
 import hypotheticalFilesProvider from './plugins/HypotheticalFilesProvider';
-import ResourceLoader from './loader/ResourceLoader';
 
 const FAKE_BUNDLED_ROOT = '/__bundled';
 const FAKE_HELPER_ROOT = '/__helpers';
@@ -97,7 +96,7 @@ export default class Transpiler {
     const config = {
       mode: target === 'web' && isProduction() ? 'production' : 'development',
       bail: true,
-      devtool: isProduction() ? null : 'cheap-module-source-map',
+      devtool: isProduction() ? false : 'cheap-module-source-map',
       entry: file,
       externals: [
         target === 'node' && this.filterExternalModules.bind(this),
@@ -167,13 +166,14 @@ export default class Transpiler {
                       babelrc: true,
                       extends: babelrc,
                       presets: [
-                        '@babel/preset-react'
-                      ].map(require.resolve),
+                        require.resolve('@babel/preset-react')
+                      ],
                       plugins: [
-                        '@babel/plugin-proposal-object-rest-spread',
-                        '@babel/plugin-proposal-class-properties',
-                        '@babel/plugin-syntax-dynamic-import'
-                      ].map(require.resolve),
+                        require.resolve('@babel/plugin-proposal-object-rest-spread'),
+                        require.resolve('@babel/plugin-proposal-class-properties'),
+                        require.resolve('@babel/plugin-syntax-dynamic-import'),
+                        require.resolve('@babel/plugin-proposal-export-namespace-from')
+                      ],
                       cacheDirectory: true,
                       highlightCode: true
                     }
@@ -183,6 +183,33 @@ export default class Transpiler {
             ]
           }
         ]
+      },
+      optimization: {
+        minimizer: [
+          isProduction() && new UglifyJsPlugin({
+            uglifyOptions: {
+              parse: {
+                ecma: 8
+              },
+              compress: {
+                ecma: 5,
+                warnings: false,
+                comparisons: false
+              },
+              mangle: {
+                safari10: true
+              },
+              output: {
+                ecma: 5,
+                comments: false,
+                ascii_only: true
+              }
+            },
+            parallel: true,
+            cache: true,
+            sourceMap: false
+          })
+        ].filter(Boolean)
       }
     };
 

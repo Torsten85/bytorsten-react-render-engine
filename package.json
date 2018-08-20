@@ -34,11 +34,13 @@
   "pkg": {
     "scripts": [
       "node_modules/@babel/runtime/helpers/*.js",
-      "node_modules/@babel/runtime/core-js/**/*.js"
+      "node_modules/@babel/runtime/core-js/**/*.js",
+      "build/ResourceLoader.js"
     ],
     "assets": [
       "node_modules/@babel/runtime/**/*",
-      "build/index.js.map"
+      "build/index.js.map",
+      "ResourceLoader.js.map"
     ]
   }
 }
